@@ -1,0 +1,21 @@
+{
+  "dev": {
+    "awscloudformation": {
+      "AuthRoleName": "amplify-complazafrontend-dev-205454-authRole",
+      "UnauthRoleArn": "arn:aws:iam::210336890849:role/amplify-complazafrontend-dev-205454-unauthRole",
+      "AuthRoleArn": "arn:aws:iam::210336890849:role/amplify-complazafrontend-dev-205454-authRole",
+      "Region": "us-east-1",
+      "DeploymentBucketName": "amplify-complazafrontend-dev-205454-deployment",
+      "UnauthRoleName": "amplify-complazafrontend-dev-205454-unauthRole",
+      "StackName": "amplify-complazafrontend-dev-205454",
+      "StackId": "arn:aws:cloudformation:us-east-1:210336890849:stack/amplify-complazafrontend-dev-205454/2e47e530-b544-11ec-92d4-12e28ced4a39",
+      "AmplifyAppId": "d3s7inj3p5wjsk"
+    },
+    "categories": {
+      "auth": {
+        "complazafrontend81f281d8": {},
+        "true": {}
+      }
+    }
+  }
+}
