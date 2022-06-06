@@ -1,0 +1,431 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: 'AWS::Serverless-2016-10-31'
+Description: Code pipeline for Complaza backend
+Parameters:
+  GitHubToken:
+    Type: String
+  RapidAPIKey:
+    Type: String
+  PredictEndPoint:
+    Type: String
+  OpensearchEndPoint:
+    Type: String
+  ImgBucket:
+    Type: String
+    Default: search-image205454-dev
+  UserPoolIdentifier:
+    Type: String
+    Default: 210336890849:userpool/us-east-1_9ofMqoqMr
+
+Resources:
+  AssetsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      AccessControl: PublicReadWrite
+
+  BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref AssetsBucket
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Sid: PublicReadGetObject
+            Effect: Allow
+            Principal: '*'
+            Action:
+              - 's3:GetObject'
+              - 's3:PutObject'
+            Resource: !Join
+              - ''
+              - - 'arn:aws:s3:::'
+                - !Ref AssetsBucket
+                - /*
+
+  CodeBuildServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      AssumeRolePolicyDocument: |
+        {
+            "Statement": [{
+                "Effect": "Allow",
+                "Principal": { "Service": [ "codebuild.amazonaws.com" ]},
+                "Action": [ "sts:AssumeRole" ]
+            }]
+        }
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+        - arn:aws:iam::aws:policy/AWSCodePipelineFullAccess
+      Policies:
+        - PolicyName: client-code-build-policy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Resource: '*'
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+              - Resource:
+                  - !Sub arn:aws:s3:::${AssetsBucket}/*
+                Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:DeleteObject
+
+  ClientBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Artifacts:
+        Type: 'CODEPIPELINE'
+      Source:
+        Type: 'CODEPIPELINE'
+        BuildSpec: buildspec.yml
+      Environment:
+        ComputeType: 'BUILD_GENERAL1_SMALL'
+        Image: 'aws/codebuild/amazonlinux2-x86_64-standard:3.0'
+        Type: 'LINUX_CONTAINER'
+        EnvironmentVariables:
+          - Name: bucket_name
+            Type: PLAINTEXT
+            Value: !Ref AssetsBucket
+      Name: !Sub ${AWS::StackName}-build-client
+      ServiceRole: !Ref CodeBuildServiceRole
+
+  CodePipelineServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      AssumeRolePolicyDocument: |
+        {
+            "Statement": [{
+                "Effect": "Allow",
+                "Principal": { "Service": [ "codepipeline.amazonaws.com" ]},
+                "Action": [ "sts:AssumeRole" ]
+            }]
+        }
+      Policies:
+        - PolicyName: code-pipeline-policy
+          PolicyDocument: |
+            {
+                "Statement": [
+                    {
+                        "Action": [
+                            "iam:PassRole"
+                        ],
+                        "Resource": "*",
+                        "Effect": "Allow",
+                        "Condition": {
+                            "StringEqualsIfExists": {
+                                "iam:PassedToService": [
+                                    "cloudformation.amazonaws.com",
+                                    "elasticbeanstalk.amazonaws.com",
+                                    "ec2.amazonaws.com",
+                                    "ecs-tasks.amazonaws.com"
+                                ]
+                            }
+                        }
+                    },
+                    {
+                        "Action": [
+                            "codecommit:CancelUploadArchive",
+                            "codecommit:GetBranch",
+                            "codecommit:GetCommit",
+                            "codecommit:GetRepository",
+                            "codecommit:GetUploadArchiveStatus",
+                            "codecommit:UploadArchive"
+                        ],
+                        "Resource": "*",
+                        "Effect": "Allow"
+                    },
+                    {
+                        "Action": [
+                            "codedeploy:CreateDeployment",
+                            "codedeploy:GetApplication",
+                            "codedeploy:GetApplicationRevision",
+                            "codedeploy:GetDeployment",
+                            "codedeploy:GetDeploymentConfig",
+                            "codedeploy:RegisterApplicationRevision"
+                        ],
+                        "Resource": "*",
+                        "Effect": "Allow"
+                    },
+                    {
+                        "Action": [
+                            "codestar-connections:UseConnection"
+                        ],
+                        "Resource": "*",
+                        "Effect": "Allow"
+                    },
+                    {
+                        "Action": [
+                            "elasticbeanstalk:*",
+                            "ec2:*",
+                            "elasticloadbalancing:*",
+                            "autoscaling:*",
+                            "cloudwatch:*",
+                            "s3:*",
+                            "sns:*",
+                            "cloudformation:*",
+                            "rds:*",
+                            "sqs:*",
+                            "ecs:*"
+                        ],
+                        "Resource": "*",
+                        "Effect": "Allow"
+                    },
+                    {
+                        "Action": [
+                            "lambda:InvokeFunction",
+                            "lambda:ListFunctions"
+                        ],
+                        "Resource": "*",
+                        "Effect": "Allow"
+                    },
+                    {
+                        "Action": [
+                            "opsworks:CreateDeployment",
+                            "opsworks:DescribeApps",
+                            "opsworks:DescribeCommands",
+                            "opsworks:DescribeDeployments",
+                            "opsworks:DescribeInstances",
+                            "opsworks:DescribeStacks",
+                            "opsworks:UpdateApp",
+                            "opsworks:UpdateStack"
+                        ],
+                        "Resource": "*",
+                        "Effect": "Allow"
+                    },
+                    {
+                        "Action": [
+                            "cloudformation:CreateStack",
+                            "cloudformation:DeleteStack",
+                            "cloudformation:DescribeStacks",
+                            "cloudformation:UpdateStack",
+                            "cloudformation:CreateChangeSet",
+                            "cloudformation:DeleteChangeSet",
+                            "cloudformation:DescribeChangeSet",
+                            "cloudformation:ExecuteChangeSet",
+                            "cloudformation:SetStackPolicy",
+                            "cloudformation:ValidateTemplate"
+                        ],
+                        "Resource": "*",
+                        "Effect": "Allow"
+                    },
+                    {
+                        "Action": [
+                            "codebuild:BatchGetBuilds",
+                            "codebuild:StartBuild",
+                            "codebuild:BatchGetBuildBatches",
+                            "codebuild:StartBuildBatch"
+                        ],
+                        "Resource": "*",
+                        "Effect": "Allow"
+                    },
+                    {
+                        "Effect": "Allow",
+                        "Action": [
+                            "devicefarm:ListProjects",
+                            "devicefarm:ListDevicePools",
+                            "devicefarm:GetRun",
+                            "devicefarm:GetUpload",
+                            "devicefarm:CreateUpload",
+                            "devicefarm:ScheduleRun"
+                        ],
+                        "Resource": "*"
+                    },
+                    {
+                        "Effect": "Allow",
+                        "Action": [
+                            "servicecatalog:ListProvisioningArtifacts",
+                            "servicecatalog:CreateProvisioningArtifact",
+                            "servicecatalog:DescribeProvisioningArtifact",
+                            "servicecatalog:DeleteProvisioningArtifact",
+                            "servicecatalog:UpdateProduct"
+                        ],
+                        "Resource": "*"
+                    },
+                    {
+                        "Effect": "Allow",
+                        "Action": [
+                            "cloudformation:ValidateTemplate"
+                        ],
+                        "Resource": "*"
+                    },
+                    {
+                        "Effect": "Allow",
+                        "Action": [
+                            "ecr:DescribeImages"
+                        ],
+                        "Resource": "*"
+                    },
+                    {
+                        "Effect": "Allow",
+                        "Action": [
+                            "states:DescribeExecution",
+                            "states:DescribeStateMachine",
+                            "states:StartExecution"
+                        ],
+                        "Resource": "*"
+                    },
+                    {
+                        "Effect": "Allow",
+                        "Action": [
+                            "appconfig:StartDeployment",
+                            "appconfig:StopDeployment",
+                            "appconfig:GetDeployment"
+                        ],
+                        "Resource": "*"
+                    }
+                ],
+                "Version": "2012-10-17"
+            }
+
+  DeployCloudFormationServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument: |
+        {
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Sid": "",
+                    "Effect": "Allow",
+                    "Principal": {
+                        "Service": "cloudformation.amazonaws.com"
+                    },
+                    "Action": "sts:AssumeRole"
+                }
+            ]
+        }
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/IAMFullAccess
+        - arn:aws:iam::aws:policy/CloudWatchFullAccess
+        - arn:aws:iam::aws:policy/AmazonAPIGatewayAdministrator
+        - arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess
+        - arn:aws:iam::aws:policy/AmazonCognitoPowerUser
+      Policies:
+        - PolicyName: LambdaCloudFormationBasicExecutionInlinePolicy
+          PolicyDocument: |
+            {
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Sid": "VisualEditor0",
+                        "Effect": "Allow",
+                        "Action": [
+                            "s3:*",
+                            "lambda:*",
+                            "cloudformation:*",
+                            "events:*"
+                        ],
+                        "Resource": "*"
+                    }
+                ]
+            }
+  Pipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      RoleArn: !GetAtt CodePipelineServiceRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref AssetsBucket
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: App
+              ActionTypeId:
+                Category: Source
+                Owner: ThirdParty
+                Version: 1
+                Provider: GitHub
+              Configuration:
+                Owner: lilili77
+                Repo: cc-proj
+                Branch: main
+                OAuthToken:
+                  Ref: GitHubToken
+              OutputArtifacts:
+                - Name: App
+              RunOrder: 1
+
+        - Name: Build
+          Actions:
+            - Name: ClientBuildStep
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: 1
+                Provider: CodeBuild
+              Configuration:
+                ProjectName: !Ref ClientBuildProject
+              InputArtifacts:
+                - Name: App
+              OutputArtifacts:
+                - Name: ClientBuild
+              RunOrder: 1
+
+        - Name: Deploy
+          Actions:
+            - Name: DeployStep
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Version: 1
+                Provider: CloudFormation
+              Configuration:
+                ActionMode: CHANGE_SET_REPLACE
+                StackName: complaza-backend
+                ChangeSetName: ChangeSet
+                RoleArn: !GetAtt DeployCloudFormationServiceRole.Arn
+                TemplatePath: ClientBuild::output-template.yaml
+                Capabilities: CAPABILITY_IAM,CAPABILITY_AUTO_EXPAND
+                ParameterOverrides: !Join
+                  - ''
+                  - - '{"RapidAPIKey": "'
+                    - !Ref RapidAPIKey
+                    - '","PredictEndPoint":"'
+                    - !Ref PredictEndPoint
+                    - '","OpensearchEndPoint":"'
+                    - !Ref OpensearchEndPoint
+                    - '","ImgBucket":"'
+                    - !Ref ImgBucket
+                    - '","UserPoolIdentifier":"'
+                    - !Ref UserPoolIdentifier
+                    - '"}'
+              InputArtifacts:
+                - Name: ClientBuild
+              OutputArtifacts:
+                - Name: ClientDeploymentOutput
+              RunOrder: 1
+
+            - Name: ExecuteChangeSet
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: '1'
+              Configuration:
+                ActionMode: CHANGE_SET_EXECUTE
+                StackName: complaza-backend
+                ChangeSetName: ChangeSet
+                ParameterOverrides: !Join
+                  - ''
+                  - - '{"RapidAPIKey": "'
+                    - !Ref RapidAPIKey
+                    - '","PredictEndPoint":"'
+                    - !Ref PredictEndPoint
+                    - '","OpensearchEndPoint":"'
+                    - !Ref OpensearchEndPoint
+                    - '","ImgBucket":"'
+                    - !Ref ImgBucket
+                    - '","UserPoolIdentifier":"'
+                    - !Ref UserPoolIdentifier
+                    - '"}'
+              OutputArtifacts: []
+              InputArtifacts:
+                - Name: ClientDeploymentOutput
+              RunOrder: 2

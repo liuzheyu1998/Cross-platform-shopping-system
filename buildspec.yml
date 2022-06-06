@@ -1,0 +1,23 @@
+version: 0.2
+phases:
+  install:
+    runtime-versions:
+      python: 3.8
+    commands:
+      # Install/upgrade pip and AWS CLI
+      - pip install --upgrade pip awscli
+      # Install the packages required
+      - pip install -r ./LF0/requirements.txt -t ./LF0
+      - pip install -r ./LF1/requirements.txt -t ./LF1
+      - pip install -r ./LF2/requirements.txt -t ./LF2
+      - pip install -r ./LF3/requirements.txt -t ./LF3
+      - pip install -r ./LF4/requirements.txt -t ./LF4
+      - pip install -r ./LF5/requirements.txt -t ./LF5
+  build:
+    commands:
+    - aws cloudformation package --template-file template.yaml --s3-bucket $bucket_name --output-template-file output-template.yaml
+artifacts:
+  type: zip
+  files:
+  - template.yaml
+  - output-template.yaml

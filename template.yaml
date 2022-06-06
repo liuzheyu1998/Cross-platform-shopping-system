@@ -1,0 +1,1191 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: 'AWS::Serverless-2016-10-31'
+Description: Complaza backend stack
+Parameters:
+  ImgBucket:
+    Type: String
+    Default: search-image205454-dev
+  UserPoolIdentifier:
+    Type: String
+    Default: 210336890849:userpool/us-east-1_9ofMqoqMr
+  RapidAPIKey:
+    Type: String
+  PredictEndPoint:
+    Type: String
+  OpensearchEndPoint:
+    Type: String
+
+Resources:
+  # ===== Databases ==============================================================
+
+  SearchHistoryTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      AttributeDefinitions:
+        - AttributeName: uid
+          AttributeType: S
+        - AttributeName: datetime
+          AttributeType: S
+      KeySchema:
+        - AttributeName: uid
+          KeyType: HASH
+        - AttributeName: datetime
+          KeyType: RANGE
+      ProvisionedThroughput:
+        ReadCapacityUnits: 20
+        WriteCapacityUnits: 20
+
+  ProductTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: 20
+        WriteCapacityUnits: 20
+
+  WishlistTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      AttributeDefinitions:
+        - AttributeName: uid
+          AttributeType: S
+        - AttributeName: pid
+          AttributeType: S
+      KeySchema:
+        - AttributeName: uid
+          KeyType: HASH
+        - AttributeName: pid
+          KeyType: RANGE
+      ProvisionedThroughput:
+        ReadCapacityUnits: 20
+        WriteCapacityUnits: 20
+
+  PriceHistoryTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      AttributeDefinitions:
+        - AttributeName: pid
+          AttributeType: S
+        - AttributeName: date
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pid
+          KeyType: HASH
+        - AttributeName: date
+          KeyType: RANGE
+      ProvisionedThroughput:
+        ReadCapacityUnits: 20
+        WriteCapacityUnits: 20
+
+  # ===== LF0 ====================================================================
+
+  LF0Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: 'lambda.amazonaws.com'
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+        - arn:aws:iam::aws:policy/AmazonSageMakerFullAccess
+        - arn:aws:iam::aws:policy/AmazonOpenSearchServiceFullAccess
+        - arn:aws:iam::aws:policy/AmazonRekognitionFullAccess
+      Policies:
+        - PolicyName: LF0BasicExecutionInlinePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: 'Allow'
+                Action:
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource:
+                  - !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/complaza-LF0:*
+
+  LF0LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: '/aws/lambda/complaza-LF0'
+      RetentionInDays: 30
+
+  LF0:
+    Type: 'AWS::Serverless::Function'
+    DependsOn: LF0LogGroup
+    Properties:
+      FunctionName: 'complaza-LF0'
+      Handler: lambda_function.lambda_handler
+      Runtime: python3.8
+      CodeUri: ./LF0
+      Description: 'Call ML endpoint to return product names'
+      MemorySize: 128
+      Timeout: 30
+      Role: !GetAtt LF0Role.Arn
+      Environment:
+        Variables:
+          ImgBucket: !Ref ImgBucket
+          PredictEndPoint: !Ref PredictEndPoint
+          OpensearchEndPoint: !Ref OpensearchEndPoint
+          SearchHistoryTable: !Ref SearchHistoryTable
+      Layers:
+        - arn:aws:lambda:us-east-1:770693421928:layer:Klayers-python38-requests:28
+        - arn:aws:lambda:us-east-1:770693421928:layer:Klayers-python38-opensearch-py:2
+        - arn:aws:lambda:us-east-1:770693421928:layer:Klayers-python38-spacy:41
+        - arn:aws:lambda:us-east-1:770693421928:layer:Klayers-python38-spacy_model_en_small:1
+
+  LF0ApiInvoke:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !Ref LF0
+      Principal: 'apigateway.amazonaws.com'
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${RestApi}/*/GET/image/*
+
+  # ===== LF1 ====================================================================
+
+  LF1Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: 'lambda.amazonaws.com'
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess
+      Policies:
+        - PolicyName: LF1BasicExecutionInlinePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: 'Allow'
+                Action:
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource:
+                  - !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/complaza-LF1:*
+
+  LF1LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: '/aws/lambda/complaza-LF1'
+      RetentionInDays: 30
+
+  LF1:
+    Type: 'AWS::Serverless::Function'
+    DependsOn: LF1LogGroup
+    Properties:
+      FunctionName: 'complaza-LF1'
+      Handler: lambda_function.lambda_handler
+      Runtime: python3.8
+      CodeUri: ./LF1
+      Description: "Call 3rd party APIs to fullfil search and save to user's search history"
+      MemorySize: 128
+      Timeout: 120
+      Role: !GetAtt LF1Role.Arn
+      Environment:
+        Variables:
+          RapidAPIKey: !Ref RapidAPIKey
+          WishlistTable: !Ref WishlistTable
+          SearchHistoryTable: !Ref SearchHistoryTable
+      Layers:
+        - arn:aws:lambda:us-east-1:770693421928:layer:Klayers-python38-requests:28
+
+  LF1ApiInvoke:
+    DependsOn: RestApi
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !Ref LF1
+      Principal: 'apigateway.amazonaws.com'
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${RestApi}/*/GET/search
+
+  # ===== LF2 ====================================================================
+
+  LF2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: 'lambda.amazonaws.com'
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess
+      Policies:
+        - PolicyName: LF2BasicExecutionInlinePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: 'Allow'
+                Action:
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource:
+                  - !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/complaza-LF2:*
+
+  LF2LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: '/aws/lambda/complaza-LF2'
+      RetentionInDays: 30
+
+  LF2:
+    Type: 'AWS::Serverless::Function'
+    DependsOn: LF2LogGroup
+    Properties:
+      FunctionName: 'complaza-LF2'
+      Handler: lambda_function.lambda_handler
+      Runtime: python3.8
+      CodeUri: ./LF2
+      Description: 'Interaction with the wishlist table'
+      MemorySize: 128
+      Timeout: 3
+      Role: !GetAtt LF2Role.Arn
+      Environment:
+        Variables:
+          WishlistTable: !Ref WishlistTable
+          ProductTable: !Ref ProductTable
+
+  LF2ApiInvoke1:
+    DependsOn: RestApi
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !Ref LF2
+      Principal: 'apigateway.amazonaws.com'
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${RestApi}/*/*/wishlist/*
+
+  LF2ApiInvoke2:
+    DependsOn: RestApi
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !Ref LF2
+      Principal: 'apigateway.amazonaws.com'
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${RestApi}/*/GET/search/wishlist/*
+
+  # ===== LF3 ====================================================================
+
+  LF3Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: 'lambda.amazonaws.com'
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess
+      Policies:
+        - PolicyName: LF3BasicExecutionInlinePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: 'Allow'
+                Action:
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource:
+                  - !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/complaza-LF3:*
+
+  LF3LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: '/aws/lambda/complaza-LF3'
+      RetentionInDays: 30
+
+  LF3:
+    Type: 'AWS::Serverless::Function'
+    DependsOn: LF3LogGroup
+    Properties:
+      FunctionName: 'complaza-LF3'
+      Handler: lambda_function.lambda_handler
+      Runtime: python3.8
+      CodeUri: ./LF3
+      Description: 'Return search history'
+      MemorySize: 128
+      Timeout: 20
+      Role: !GetAtt LF3Role.Arn
+      Environment:
+        Variables:
+          SearchHistoryTable: !Ref SearchHistoryTable
+      Layers:
+        - arn:aws:lambda:us-east-1:770693421928:layer:Klayers-python38-requests:28
+
+  LF3ApiInvoke1:
+    DependsOn: RestApi
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !Ref LF3
+      Principal: 'apigateway.amazonaws.com'
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${RestApi}/*/GET/history/*
+
+  LF3ApiInvoke2:
+    DependsOn: RestApi
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !Ref LF3
+      Principal: 'apigateway.amazonaws.com'
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${RestApi}/*/GET/search/history/*
+
+  # ===== LF4 ====================================================================
+
+  LF4Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: 'lambda.amazonaws.com'
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess
+      Policies:
+        - PolicyName: LF4BasicExecutionInlinePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: 'Allow'
+                Action:
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource:
+                  - !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/complaza-LF4:*
+
+  LF4LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: '/aws/lambda/complaza-LF4'
+      RetentionInDays: 30
+
+  LF4:
+    Type: 'AWS::Serverless::Function'
+    DependsOn: LF4LogGroup
+    Properties:
+      FunctionName: 'complaza-LF4'
+      Handler: lambda_function.lambda_handler
+      Runtime: python3.8
+      CodeUri: ./LF4
+      Description: 'Get price and update price history'
+      MemorySize: 128
+      Timeout: 600
+      Role: !GetAtt LF4Role.Arn
+      Environment:
+        Variables:
+          ProductTable: !Ref ProductTable
+          PriceHistoryTable: !Ref PriceHistoryTable
+      Layers:
+        - arn:aws:lambda:us-east-1:770693421928:layer:Klayers-python38-requests:28
+
+  # Trigger LF4 1/day
+  LF4ScheduledRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: 'LF4 ScheduledRule rate(1 day)'
+      ScheduleExpression: 'rate(1 day)'
+      State: 'ENABLED'
+      Targets:
+        - Arn:
+            Fn::GetAtt:
+              - 'LF4'
+              - 'Arn'
+          Id: 'TargetFunctionV1'
+
+  PermissionForEventsToInvokeLambda:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName:
+        Ref: LF4
+      Action: 'lambda:InvokeFunction'
+      Principal: 'events.amazonaws.com'
+      SourceArn:
+        Fn::GetAtt:
+          - 'LF4ScheduledRule'
+          - 'Arn'
+
+  # ===== LF5 ====================================================================
+
+  LF5Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: 'lambda.amazonaws.com'
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess
+      Policies:
+        - PolicyName: LF5BasicExecutionInlinePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: 'Allow'
+                Action:
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource:
+                  - !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/complaza-LF5:*
+
+  LF5LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: '/aws/lambda/complaza-LF5'
+      RetentionInDays: 30
+
+  LF5:
+    Type: 'AWS::Serverless::Function'
+    DependsOn: LF5LogGroup
+    Properties:
+      FunctionName: 'complaza-LF5'
+      Handler: lambda_function.lambda_handler
+      Runtime: python3.8
+      CodeUri: ./LF5
+      Description: 'Get product details and price history'
+      MemorySize: 128
+      Timeout: 20
+      Role: !GetAtt LF5Role.Arn
+      Environment:
+        Variables:
+          ProductTable: !Ref ProductTable
+          PriceHistoryTable: !Ref PriceHistoryTable
+
+  LF5ApiInvoke:
+    DependsOn: RestApi
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !Ref LF5
+      Principal: 'apigateway.amazonaws.com'
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${RestApi}/*/GET/product/*
+
+  # ===== API gateway ============================================================
+
+  RestApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Parameters:
+        endpointConfigurationTypes: REGIONAL
+      Body:
+        swagger: '2.0'
+        info:
+          version: '1'
+          title: 'Complaza API'
+        basePath: '/stage1'
+        schemes:
+          - 'https'
+        securityDefinitions:
+          ApiCognitoAuthorizer:
+            type: apiKey
+            name: Authorization
+            in: header
+            x-amazon-apigateway-authtype: cognito_user_pools
+            x-amazon-apigateway-authorizer:
+              type: cognito_user_pools
+              providerARNs:
+                - !Sub arn:aws:cognito-idp:${AWS::Region}:${UserPoolIdentifier}
+        paths:
+          /image/{key}:
+            get:
+              consumes:
+                - 'application/json'
+              produces:
+                - 'application/json'
+              parameters:
+                - name: 'key'
+                  in: 'path'
+                  required: true
+                  type: 'string'
+              responses:
+                '200':
+                  description: '200 response'
+                  schema:
+                    $ref: '#/definitions/Empty'
+                  headers:
+                    Access-Control-Allow-Origin:
+                      type: 'string'
+              x-amazon-apigateway-integration:
+                type: aws
+                httpMethod: 'POST'
+                uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LF0.Arn}/invocations'
+                credentials: arn:aws:iam::210336890849:role/api-gateway-invoke-lambda
+                responses:
+                  default:
+                    statusCode: '200'
+                    responseParameters:
+                      method.response.header.Access-Control-Allow-Origin: "'*'"
+                requestParameters:
+                  integration.request.querystring.key: 'method.request.path.key'
+                requestTemplates:
+                  application/json: |
+                    { 
+                      "key": "$input.params('key')"
+                    }
+                passthroughBehavior: 'when_no_match'
+                contentHandling: 'CONVERT_TO_TEXT'
+            options:
+              consumes:
+                - 'application/json'
+              produces:
+                - 'application/json'
+              parameters:
+                - name: 'key'
+                  in: 'path'
+                  required: true
+                  type: 'string'
+              responses:
+                '200':
+                  description: '200 response'
+                  schema:
+                    $ref: '#/definitions/Empty'
+                  headers:
+                    Access-Control-Allow-Origin:
+                      type: 'string'
+                    Access-Control-Allow-Methods:
+                      type: 'string'
+                    Access-Control-Allow-Headers:
+                      type: 'string'
+              x-amazon-apigateway-integration:
+                type: 'mock'
+                responses:
+                  default:
+                    statusCode: '200'
+                    responseParameters:
+                      method.response.header.Access-Control-Allow-Methods: "'OPTIONS,POST'"
+                      method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+                      method.response.header.Access-Control-Allow-Origin: "'*'"
+                requestTemplates:
+                  application/json: '{"statusCode": 200}'
+                passthroughBehavior: 'when_no_match'
+          /product/{pid}:
+            get:
+              consumes:
+                - 'application/json'
+              produces:
+                - 'application/json'
+              parameters:
+                - name: 'pid'
+                  in: 'path'
+                  required: true
+                  type: 'string'
+              responses:
+                '200':
+                  description: '200 response'
+                  schema:
+                    $ref: '#/definitions/Empty'
+                  headers:
+                    Access-Control-Allow-Origin:
+                      type: 'string'
+              x-amazon-apigateway-integration:
+                type: aws
+                httpMethod: 'POST'
+                uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LF5.Arn}/invocations'
+                credentials: arn:aws:iam::210336890849:role/api-gateway-invoke-lambda
+                responses:
+                  default:
+                    statusCode: '200'
+                    responseParameters:
+                      method.response.header.Access-Control-Allow-Origin: "'*'"
+                requestParameters:
+                  integration.request.querystring.pid: 'method.request.path.pid'
+                requestTemplates:
+                  application/json: |
+                    { 
+                      "pid": "$input.params('pid')"
+                    }
+                passthroughBehavior: 'when_no_match'
+                contentHandling: 'CONVERT_TO_TEXT'
+            options:
+              consumes:
+                - 'application/json'
+              produces:
+                - 'application/json'
+              parameters:
+                - name: 'pid'
+                  in: 'path'
+                  required: true
+                  type: 'string'
+              responses:
+                '200':
+                  description: '200 response'
+                  schema:
+                    $ref: '#/definitions/Empty'
+                  headers:
+                    Access-Control-Allow-Origin:
+                      type: 'string'
+                    Access-Control-Allow-Methods:
+                      type: 'string'
+                    Access-Control-Allow-Headers:
+                      type: 'string'
+              x-amazon-apigateway-integration:
+                type: 'mock'
+                responses:
+                  default:
+                    statusCode: '200'
+                    responseParameters:
+                      method.response.header.Access-Control-Allow-Methods: "'DELETE,GET,HEAD,OPTIONS,PATCH,POST,PUT'"
+                      method.response.header.Access-Control-Allow-Headers: "'Content-Type,Authorization,X-Amz-Date,X-Api-Key,X-Amz-Security-Token'"
+                      method.response.header.Access-Control-Allow-Origin: "'*'"
+                requestTemplates:
+                  application/json: '{"statusCode": 200}'
+                passthroughBehavior: 'when_no_match'
+          /search:
+            get:
+              consumes:
+                - 'application/json'
+              produces:
+                - 'application/json'
+              parameters:
+                - name: 'sort_by'
+                  in: 'query'
+                  required: true
+                  type: 'string'
+                - name: 'uid'
+                  in: 'query'
+                  required: true
+                  type: 'string'
+                - name: 'q'
+                  in: 'query'
+                  required: true
+                  type: 'string'
+                - name: 'img'
+                  in: 'query'
+                  required: true
+                  type: 'string'
+              responses:
+                '200':
+                  description: '200 response'
+                  schema:
+                    $ref: '#/definitions/Empty'
+                  headers:
+                    Access-Control-Allow-Origin:
+                      type: 'string'
+              x-amazon-apigateway-integration:
+                type: aws
+                httpMethod: 'POST'
+                uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LF1.Arn}/invocations'
+                credentials: arn:aws:iam::210336890849:role/api-gateway-invoke-lambda
+                responses:
+                  default:
+                    statusCode: '200'
+                    responseParameters:
+                      method.response.header.Access-Control-Allow-Origin: "'*'"
+                requestParameters:
+                  integration.request.querystring.uid: 'method.request.querystring.uid'
+                  integration.request.querystring.img: 'method.request.querystring.img'
+                  integration.request.querystring.q: 'method.request.querystring.q'
+                  integration.request.querystring.sort_by: 'method.request.querystring.sort_by'
+                requestTemplates:
+                  application/json: |
+                    { 
+                      "q": "$input.params('q')",
+                      "img": "$input.params('img')",
+                      "uid": "$input.params('uid')",
+                      "sort_by": "$input.params('sort_by')"
+                    }
+                passthroughBehavior: 'when_no_match'
+                contentHandling: 'CONVERT_TO_TEXT'
+            options:
+              consumes:
+                - 'application/json'
+              produces:
+                - 'application/json'
+              responses:
+                '200':
+                  description: '200 response'
+                  schema:
+                    $ref: '#/definitions/Empty'
+                  headers:
+                    Access-Control-Allow-Origin:
+                      type: 'string'
+                    Access-Control-Allow-Methods:
+                      type: 'string'
+                    Access-Control-Allow-Headers:
+                      type: 'string'
+              x-amazon-apigateway-integration:
+                type: 'mock'
+                responses:
+                  default:
+                    statusCode: '200'
+                    responseParameters:
+                      method.response.header.Access-Control-Allow-Methods: "'DELETE,GET,HEAD,OPTIONS,PATCH,POST,PUT'"
+                      method.response.header.Access-Control-Allow-Headers: "'Content-Type,Authorization,X-Amz-Date,X-Api-Key,X-Amz-Security-Token'"
+                      method.response.header.Access-Control-Allow-Origin: "'*'"
+                requestTemplates:
+                  application/json: '{"statusCode": 200}'
+                passthroughBehavior: 'when_no_match'
+          /history/{uid}:
+            get:
+              consumes:
+                - 'application/json'
+              produces:
+                - 'application/json'
+              parameters:
+                - name: 'uid'
+                  in: 'path'
+                  required: true
+                  type: 'string'
+              responses:
+                '200':
+                  description: '200 response'
+                  schema:
+                    $ref: '#/definitions/Empty'
+                  headers:
+                    Access-Control-Allow-Origin:
+                      type: 'string'
+              security:
+                - ApiCognitoAuthorizer: []
+              x-amazon-apigateway-integration:
+                type: aws
+                httpMethod: 'POST'
+                uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LF3.Arn}/invocations'
+                credentials: arn:aws:iam::210336890849:role/api-gateway-invoke-lambda
+                responses:
+                  default:
+                    statusCode: '200'
+                    responseParameters:
+                      method.response.header.Access-Control-Allow-Origin: "'*'"
+                requestParameters:
+                  integration.request.querystring.uid: 'method.request.path.uid'
+                requestTemplates:
+                  application/json: |
+                    { 
+                      "uid": "$input.params('uid')",
+                      "method": "$context.httpMethod"
+                    }
+                passthroughBehavior: 'when_no_match'
+                contentHandling: 'CONVERT_TO_TEXT'
+            options:
+              consumes:
+                - 'application/json'
+              produces:
+                - 'application/json'
+              parameters:
+                - name: 'uid'
+                  in: 'path'
+                  required: true
+                  type: 'string'
+              responses:
+                '200':
+                  description: '200 response'
+                  schema:
+                    $ref: '#/definitions/Empty'
+                  headers:
+                    Access-Control-Allow-Origin:
+                      type: 'string'
+                    Access-Control-Allow-Methods:
+                      type: 'string'
+                    Access-Control-Allow-Headers:
+                      type: 'string'
+              x-amazon-apigateway-integration:
+                type: 'mock'
+                responses:
+                  default:
+                    statusCode: '200'
+                    responseParameters:
+                      method.response.header.Access-Control-Allow-Methods: "'GET,OPTIONS'"
+                      method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+                      method.response.header.Access-Control-Allow-Origin: "'*'"
+                requestTemplates:
+                  application/json: '{"statusCode": 200}'
+                passthroughBehavior: 'when_no_match'
+          /search/history/{uid}:
+            get:
+              consumes:
+                - 'application/json'
+              produces:
+                - 'application/json'
+              parameters:
+                - name: 'uid'
+                  in: 'path'
+                  required: true
+                  type: 'string'
+                - name: 'q'
+                  in: 'query'
+                  required: true
+                  type: 'string'
+              responses:
+                '200':
+                  description: '200 response'
+                  schema:
+                    $ref: '#/definitions/Empty'
+                  headers:
+                    Access-Control-Allow-Origin:
+                      type: 'string'
+              security:
+                - ApiCognitoAuthorizer: []
+              x-amazon-apigateway-integration:
+                type: aws
+                httpMethod: 'POST'
+                uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LF3.Arn}/invocations'
+                credentials: arn:aws:iam::210336890849:role/api-gateway-invoke-lambda
+                responses:
+                  default:
+                    statusCode: '200'
+                    responseParameters:
+                      method.response.header.Access-Control-Allow-Origin: "'*'"
+                requestParameters:
+                  integration.request.querystring.uid: 'method.request.path.uid'
+                  integration.request.querystring.q: 'method.request.querystring.q'
+                requestTemplates:
+                  application/json: |
+                    { 
+                      "uid": "$input.params('uid')",
+                      "q": "$input.params('q')",
+                      "method": "SEARCH"
+                    }
+                passthroughBehavior: 'when_no_match'
+                contentHandling: 'CONVERT_TO_TEXT'
+            options:
+              consumes:
+                - 'application/json'
+              produces:
+                - 'application/json'
+              parameters:
+                - name: 'uid'
+                  in: 'path'
+                  required: true
+                  type: 'string'
+              responses:
+                '200':
+                  description: '200 response'
+                  schema:
+                    $ref: '#/definitions/Empty'
+                  headers:
+                    Access-Control-Allow-Origin:
+                      type: 'string'
+                    Access-Control-Allow-Methods:
+                      type: 'string'
+                    Access-Control-Allow-Headers:
+                      type: 'string'
+              x-amazon-apigateway-integration:
+                type: 'mock'
+                responses:
+                  default:
+                    statusCode: '200'
+                    responseParameters:
+                      method.response.header.Access-Control-Allow-Methods: "'GET,OPTIONS'"
+                      method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+                      method.response.header.Access-Control-Allow-Origin: "'*'"
+                requestTemplates:
+                  application/json: '{"statusCode": 200}'
+                passthroughBehavior: 'when_no_match'
+          /search/wishlist/{uid}:
+            get:
+              consumes:
+                - 'application/json'
+              produces:
+                - 'application/json'
+              parameters:
+                - name: 'uid'
+                  in: 'path'
+                  required: true
+                  type: 'string'
+                - name: 'q'
+                  in: 'query'
+                  required: true
+                  type: 'string'
+              responses:
+                '200':
+                  description: '200 response'
+                  schema:
+                    $ref: '#/definitions/Empty'
+                  headers:
+                    Access-Control-Allow-Origin:
+                      type: 'string'
+              security:
+                - ApiCognitoAuthorizer: []
+              x-amazon-apigateway-integration:
+                type: aws
+                httpMethod: 'POST'
+                uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LF2.Arn}/invocations'
+                credentials: arn:aws:iam::210336890849:role/api-gateway-invoke-lambda
+                responses:
+                  default:
+                    statusCode: '200'
+                    responseParameters:
+                      method.response.header.Access-Control-Allow-Origin: "'*'"
+                requestParameters:
+                  integration.request.querystring.uid: 'method.request.path.uid'
+                  integration.request.querystring.q: 'method.request.querystring.q'
+                requestTemplates:
+                  application/json: |
+                    { 
+                      "uid": "$input.params('uid')",
+                      "q": "$input.params('q')",
+                      "method": "SEARCH"
+                    }
+                passthroughBehavior: 'when_no_match'
+                contentHandling: 'CONVERT_TO_TEXT'
+            options:
+              consumes:
+                - 'application/json'
+              produces:
+                - 'application/json'
+              parameters:
+                - name: 'uid'
+                  in: 'path'
+                  required: true
+                  type: 'string'
+              responses:
+                '200':
+                  description: '200 response'
+                  schema:
+                    $ref: '#/definitions/Empty'
+                  headers:
+                    Access-Control-Allow-Origin:
+                      type: 'string'
+                    Access-Control-Allow-Methods:
+                      type: 'string'
+                    Access-Control-Allow-Headers:
+                      type: 'string'
+              x-amazon-apigateway-integration:
+                type: 'mock'
+                responses:
+                  default:
+                    statusCode: '200'
+                    responseParameters:
+                      method.response.header.Access-Control-Allow-Methods: "'GET,OPTIONS'"
+                      method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+                      method.response.header.Access-Control-Allow-Origin: "'*'"
+                requestTemplates:
+                  application/json: '{"statusCode": 200}'
+                passthroughBehavior: 'when_no_match'
+          /wishlist/{uid}:
+            get:
+              consumes:
+                - 'application/json'
+              produces:
+                - 'application/json'
+              parameters:
+                - name: 'uid'
+                  in: 'path'
+                  required: true
+                  type: 'string'
+              responses:
+                '200':
+                  description: '200 response'
+                  schema:
+                    $ref: '#/definitions/Empty'
+                  headers:
+                    Access-Control-Allow-Origin:
+                      type: 'string'
+              security:
+                - ApiCognitoAuthorizer: []
+              x-amazon-apigateway-integration:
+                type: aws
+                httpMethod: 'POST'
+                uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LF2.Arn}/invocations'
+                credentials: arn:aws:iam::210336890849:role/api-gateway-invoke-lambda
+                responses:
+                  default:
+                    statusCode: '200'
+                    responseParameters:
+                      method.response.header.Access-Control-Allow-Origin: "'*'"
+                requestParameters:
+                  integration.request.querystring.uid: 'method.request.path.uid'
+                requestTemplates:
+                  application/json: |
+                    { 
+                      "uid": "$input.params('uid')",
+                      "method": "$context.httpMethod"
+                    }
+                passthroughBehavior: 'when_no_match'
+                contentHandling: 'CONVERT_TO_TEXT'
+            post:
+              consumes:
+                - 'application/json'
+              produces:
+                - 'application/json'
+              parameters:
+                - name: 'uid'
+                  in: 'path'
+                  required: true
+                  type: 'string'
+              responses:
+                '200':
+                  description: '200 response'
+                  schema:
+                    $ref: '#/definitions/Empty'
+                  headers:
+                    Access-Control-Allow-Origin:
+                      type: 'string'
+              security:
+                - ApiCognitoAuthorizer: []
+              x-amazon-apigateway-integration:
+                type: aws
+                httpMethod: 'POST'
+                uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LF2.Arn}/invocations'
+                credentials: arn:aws:iam::210336890849:role/api-gateway-invoke-lambda
+                responses:
+                  default:
+                    statusCode: '200'
+                    responseParameters:
+                      method.response.header.Access-Control-Allow-Origin: "'*'"
+                requestParameters:
+                  integration.request.querystring.uid: 'method.request.path.uid'
+                requestTemplates:
+                  application/json: |
+                    { 
+                      "uid": "$input.params('uid')",
+                      "item": $input.json('$.item'),
+                      "method": "$context.httpMethod"
+                    }
+                passthroughBehavior: 'when_no_match'
+                contentHandling: 'CONVERT_TO_TEXT'
+            options:
+              consumes:
+                - 'application/json'
+              produces:
+                - 'application/json'
+              parameters:
+                - name: 'uid'
+                  in: 'path'
+                  required: true
+                  type: 'string'
+              responses:
+                '200':
+                  description: '200 response'
+                  schema:
+                    $ref: '#/definitions/Empty'
+                  headers:
+                    Access-Control-Allow-Origin:
+                      type: 'string'
+                    Access-Control-Allow-Methods:
+                      type: 'string'
+                    Access-Control-Allow-Headers:
+                      type: 'string'
+              x-amazon-apigateway-integration:
+                type: 'mock'
+                responses:
+                  default:
+                    statusCode: '200'
+                    responseParameters:
+                      method.response.header.Access-Control-Allow-Methods: "'DELETE,GET,HEAD,OPTIONS,PATCH,POST,PUT'"
+                      method.response.header.Access-Control-Allow-Headers: "'Content-Type,Authorization,X-Amz-Date,X-Api-Key,X-Amz-Security-Token'"
+                      method.response.header.Access-Control-Allow-Origin: "'*'"
+                requestTemplates:
+                  application/json: '{"statusCode": 200}'
+                passthroughBehavior: 'when_no_match'
+          /wishlist/{uid}/{pid}:
+            delete:
+              consumes:
+                - 'application/json'
+              produces:
+                - 'application/json'
+              parameters:
+                - name: 'uid'
+                  in: 'path'
+                  required: true
+                  type: 'string'
+                - name: 'pid'
+                  in: 'path'
+                  required: true
+                  type: 'string'
+              responses:
+                '200':
+                  description: '200 response'
+                  schema:
+                    $ref: '#/definitions/Empty'
+                  headers:
+                    Access-Control-Allow-Origin:
+                      type: 'string'
+              security:
+                - ApiCognitoAuthorizer: []
+              x-amazon-apigateway-integration:
+                type: aws
+                httpMethod: 'POST'
+                uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LF2.Arn}/invocations'
+                credentials: arn:aws:iam::210336890849:role/api-gateway-invoke-lambda
+                responses:
+                  default:
+                    statusCode: '200'
+                    responseParameters:
+                      method.response.header.Access-Control-Allow-Origin: "'*'"
+                requestParameters:
+                  integration.request.querystring.uid: 'method.request.path.uid'
+                  integration.request.querystring.pid: 'method.request.path.pid'
+                requestTemplates:
+                  application/json: |
+                    { 
+                      "uid": "$input.params('uid')",
+                      "pid": "$input.params('pid')",
+                      "method": "$context.httpMethod"
+                    }
+                passthroughBehavior: 'when_no_match'
+                contentHandling: 'CONVERT_TO_TEXT'
+            options:
+              consumes:
+                - 'application/json'
+              produces:
+                - 'application/json'
+              parameters:
+                - name: 'uid'
+                  in: 'path'
+                  required: true
+                  type: 'string'
+                - name: 'pid'
+                  in: 'path'
+                  required: true
+                  type: 'string'
+              responses:
+                '200':
+                  description: '200 response'
+                  schema:
+                    $ref: '#/definitions/Empty'
+                  headers:
+                    Access-Control-Allow-Origin:
+                      type: 'string'
+                    Access-Control-Allow-Methods:
+                      type: 'string'
+                    Access-Control-Allow-Headers:
+                      type: 'string'
+              x-amazon-apigateway-integration:
+                type: 'mock'
+                responses:
+                  default:
+                    statusCode: '200'
+                    responseParameters:
+                      method.response.header.Access-Control-Allow-Methods: "'DELETE,GET,HEAD,OPTIONS,PATCH,POST,PUT'"
+                      method.response.header.Access-Control-Allow-Headers: "'Content-Type,Authorization,X-Amz-Date,X-Api-Key,X-Amz-Security-Token'"
+                      method.response.header.Access-Control-Allow-Origin: "'*'"
+                requestTemplates:
+                  application/json: '{"statusCode": 200}'
+                passthroughBehavior: 'when_no_match'
+        definitions:
+          Empty:
+            type: 'object'
+            title: 'Empty Schema'
+
+  Deployment:
+    Type: 'AWS::ApiGateway::Deployment'
+    Properties:
+      RestApiId: !Ref RestApi
+      Description: Complaza api deployment
+      StageName: stage1
+
+# ===== Outputs ============================================================
+Outputs:
+  ApiUrl:
+    Value: !Sub https://${RestApi}.execute-api.${AWS::Region}.amazonaws.com/stage1
