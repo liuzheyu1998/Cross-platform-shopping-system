@@ -1,5 +1,7 @@
 # Complaza Backend Stack
 
+This application is based on AWS services, which allows the user to search for products across platforms using image/voice/text as input, and our application leveraged computer vision based model for recommending products based on their image input. 
+
 ## Backend Resources
 
 ### Lambda functions
